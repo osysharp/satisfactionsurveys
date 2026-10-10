@@ -1,0 +1,106 @@
+// HOW IT IS GOING — the results for the people who did the work: how many answered, how many said good, week by week,
+// and what people wrote. One read on open (`SummariseFeedback`), so a page of results costs the same whatever it shows.
+namespace Osysharp.SatisfactionSurveys;
+
+using Osysharp.Ui;
+
+/// The results — every topic together, over the last `weeks` weeks. Place it on a page of the app's own:
+/// `FeedbackResults()`.
+[Composable]
+public component FeedbackResults(int weeks = 12) {
+  FeedbackSummary? summary = null;
+  string problem = "";
+  DateTime now = DateTime.UtcNow;
+  on mount {
+    try { summary = SummariseFeedback(weeks); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 4, w: "100%", label: "Feedback results") {
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (summary == null && problem == "") {
+        Card() { Stack(gap: 3) { SkeletonText(); SkeletonText(); SkeletonText(); } }
+      }
+      if (summary != null && summary!.Asked == 0) {
+        Card() {
+          EmptyState("Nobody has been asked yet",
+                     body: $"When work is done and people are asked how it went, their answers appear here — the last {weeks} weeks.") {
+            slot icon { Icon(Icons.Star, size: 28, color: Colors.TextMuted); }
+          }
+        }
+      }
+      if (summary != null && summary!.Asked > 0) {
+        Card() {
+          Row(gap: 6, wrap: Wrapping.Wrap) {
+            Metric("Said good", summary!.PercentGood == null ? "—" : summary!.PercentGood + "%");
+            Metric("Answered", summary!.PercentAnswered == null ? "—" : summary!.PercentAnswered + "%");
+            Metric("Good", summary!.Good.ToString());
+            Metric("Bad", summary!.Bad.ToString());
+            Metric("Asked", summary!.Asked.ToString());
+          }
+        }
+        Card(title: "Week by week", subtitle: "Answers given in each seven days, good above and bad below.") {
+          FeedbackWeeks(summary!.Weeks);
+        }
+        Card(title: "What people wrote") {
+          if (summary!.Recent.Count == 0) {
+            Text("Nobody has written a comment yet.", color: Colors.TextMuted);
+          }
+          Stack(gap: 0, role: UiRole.List, label: "Comments") {
+            foreach (var c in summary!.Recent) {
+              Stack(gap: 1, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: c.Title) {
+                Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+                  Badge(c.Rating == FeedbackRating.Bad ? "Bad" : "Good", tone: c.Rating == FeedbackRating.Bad ? Tone.Danger : Tone.Success);
+                  if (c.Link != "") {
+                    Link(href: c.Link, color: Colors.Primary, minW: "0") { Text(c.Title, fontWeight: FontWeight.Medium); }
+                  } else {
+                    Text(c.Title, fontWeight: FontWeight.Medium);
+                  }
+                  Spacer();
+                  Text($"{c.At:d MMM}", fontSize: FontSize.Caption, color: Colors.TextMuted);
+                }
+                Text(c.Comment, color: Colors.OnSurface, whiteSpace: WhiteSpace.PreWrap);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Seven-day columns: good rising from the middle line, bad falling below it — each column's height its count.
+[Composable]
+public component FeedbackWeeks(List<FeedbackWeek> weeks) {
+  live var most = weeks.Count == 0 ? 0 : weeks.Max(w => w.Good > w.Bad ? w.Good : w.Bad);
+  render {
+    Stack(gap: 2) {
+      Row(gap: 1, align: Align.End, h: "56px", borderBW: 1, border: Colors.Border, role: UiRole.List, label: "Good each week") {
+        foreach (var w in weeks) {
+          Row(grow: 1, basis: "0", h: "100%", align: Align.End, justify: Justify.Center, role: UiRole.ListItem,
+              label: $"Week of {w.Starts:d MMM}: {w.Good} good, {w.Bad} bad") {
+            Box(w: "60%", maxW: "28px", h: BarHeight(w.Good, most), minH: w.Good > 0 ? "3px" : "0", bg: Colors.Success,
+                rounded: Radius.Sm);
+          }
+        }
+      }
+      Row(gap: 1, align: Align.Start, h: "56px", pt: "2px") {
+        foreach (var w in weeks) {
+          Row(grow: 1, basis: "0", h: "100%", align: Align.Start, justify: Justify.Center) {
+            Box(w: "60%", maxW: "28px", h: BarHeight(w.Bad, most), minH: w.Bad > 0 ? "3px" : "0", bg: Colors.Danger,
+                rounded: Radius.Sm);
+          }
+        }
+      }
+      Row(gap: 2) {
+        Text(weeks.Count == 0 ? "" : $"{weeks[0].Starts:d MMM}", fontSize: FontSize.Caption, color: Colors.TextMuted, grow: 1);
+        Text("now", fontSize: FontSize.Caption, color: Colors.TextMuted);
+      }
+    }
+  }
+}
+
+/// A column's height as a share of the tallest — "0%" for none.
+string BarHeight(int count, int most) {
+  if (most == 0 || count == 0) { return "0%"; }
+  return ((int)Math.Round(count * 100.0 / most)).ToString() + "%";
+}

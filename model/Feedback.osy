@@ -1,0 +1,452 @@
+namespace Osysharp.SatisfactionSurveys;
+
+using Osysharp.Identity;
+using Osysharp.Workflow;
+using Osysharp.Mail;
+using Osysharp.EmailTemplates;
+
+// ── a question, and its answer ────────────────────────────────────────────────────────────────────────────────────────
+
+/// What a person said. ⚠ Appended, never inserted: an enum is stored by position.
+public enum FeedbackRating {
+  [Label("Good")] Good,
+  [Label("Bad")] Bad,
+}
+
+/// Whether an answer is new or a change of mind — what `FeedbackAnswered` says.
+public enum FeedbackChange {
+  [Label("Answered")] First,
+  [Label("Changed")] Changed,
+}
+
+/// Whether the kit mailed the question. ⚠ Appended, never inserted.
+public enum FeedbackMailState {
+  /// Mailed when its time comes (`MailAt`) — after the commit that asked.
+  [Label("Waiting to be mailed")] Waiting,
+  /// Mailed — by the kit, or with the app's own mail (`TakeFeedbackMail`).
+  [Label("Mailed")] Mailed,
+  /// Not mailed: the app asked in its own page only, there was no address, or it was answered or withdrawn first.
+  [Label("Not mailed")] NotMailed,
+}
+
+/// Where a question stands, as its person and the app read it.
+public enum FeedbackStage {
+  /// It can be answered.
+  [Label("Open")] Open,
+  /// Answered, and the answer can still be changed.
+  [Label("Answered")] Answered,
+  /// Answered, and too late to change it.
+  [Label("Settled")] Settled,
+  /// Never answered, and too late now.
+  [Label("Closed")] Closed,
+  /// The app stopped asking — the work was opened again.
+  [Label("No longer asked")] Withdrawn,
+}
+
+/// The link a question is mailed with — it answers that ONE question, for a person who is not signed in. It is the
+/// question's own: it reads the question and lets its holder answer it, and nothing else in the app. When the question
+/// closes, or once its answer can no longer be changed, the link still opens it to say so.
+public grant FeedbackLink for FeedbackAsk { Expires = TimeSpan.FromDays(400); }
+
+/// ONE QUESTION to one person about one piece of work — and, on it, their one answer.
+///
+/// SECURITY-INVARIANT(feedback-one-answer-per-subject-per-person): a person has ONE question about a piece of work and
+/// so one answer — `[Unique(About, PersonKey)]` holds it in the database, whoever asks and however often.
+/// Guarded by tests/answers.test.osy `the_database_holds_one_question_per_piece_of_work_and_person`.
+///
+/// SECURITY-INVARIANT(feedback-is-answered-only-by-its-person): what a person answered (`Rating`, `Comment`,
+/// `AnsweredAt`, …) is written only by the kit's own run from a reply THEY made — signed in as the account it was asked
+/// of, or holding the link mailed to them. Nobody else's request writes an answer, the app's staff included.
+/// Guarded by tests/answers.test.osy `nobody_answers_for_somebody_else`.
+///
+/// ⚑ THE APP ASKS, so this is `Extensible`: the kit's runs write as the system, and a request that asks or withdraws a
+///   question needs the app's grant — `partial entity FeedbackAsk { security { allow create, update when IsStaff; } }`.
+///   An app that asks only from its workflows (a solve, a delivery) needs none.
+[Authority(Extensible)]
+[Unique(About, PersonKey)]
+public entity FeedbackAsk {
+  /// The work it is about — any record the app keeps. Read as the reader: what a person said about work they may not
+  /// read reads as about nothing. The question outlives the work (what was said is kept for its own time), so a deleted
+  /// record leaves it reading as about nothing too.
+  [Required] Entity About;
+  /// Who was asked, as one key: their account, or the address the question was mailed to. One question per key.
+  [Required, MaxLength(340)] string PersonKey;
+  /// Their account, when they have one — they answer signed in, on the app's page.
+  Principal? Person;
+  /// Where the question is mailed. "" for a person asked only in the app.
+  [Classification(Personal.Contact), MaxLength(320)] string Address = "";
+  /// The language the question is mailed in — the person's own.
+  [MaxLength(20)] string Language = "";
+  /// What the work was, as the person reads it — "Your city bike, serviced on 4 March". Kept on the question, so a
+  /// person answering from a mail reads it without reading the work itself.
+  [Classification(Personal.Content), MaxLength(300)] string Title = "";
+  /// Who asked — none for the app itself (a rule, a timer).
+  Principal? By;
+  /// When it was (last) asked.
+  DateTime AskedAt;
+  /// After this it can no longer be answered.
+  DateTime ClosesAt;
+  /// When the kit mails it — none: the app carries it in its own mail, or asks in its page only.
+  DateTime? MailAt;
+  /// When it was last mailed — by the kit or with the app's mail.
+  DateTime? MailedAt;
+  FeedbackMailState Mail;                            // no default — FeedbackMailing owns it
+  /// The answer — none until they answer.
+  FeedbackRating? Rating;
+  [Classification(Personal.Content), MaxLength(2000)] string? Comment;
+  DateTime? AnsweredAt;
+  DateTime? ChangedAt;
+  /// Until when the answer can be changed — set when it is given.
+  DateTime? ChangeUntil;
+  /// How often it was changed.
+  int Changes;
+  /// The app stopped asking — the work was opened again. Asked again, it is open again.
+  DateTime? WithdrawnAt;
+  /// Why it was not mailed, or a reply was refused — for whoever looks after the app.
+  [MaxLength(300)] string? Problem;
+  security {
+    allow read when ReadsFeedback;
+    // The person reads their own question — signed in as the account it was asked of, or by its link.
+    allow read when IsAuthenticated where Person != null && Person == user;
+    allow read by FeedbackLink;
+    // What the person said is the kit's run's to write, from their reply — never a request's, the app's included.
+    deny create where Rating != null || Comment != null || AnsweredAt != null || ChangedAt != null || Changes != 0;
+    deny update About, PersonKey, Person, Rating, Comment, AnsweredAt, ChangedAt, Changes;
+    deny delete;
+  }
+}
+
+/// A person's answer as they gave it — a request to answer, or to change their answer, applied after the commit by
+/// `FeedbackReplying`, which checks the windows again. Only the question's own person makes one.
+public entity FeedbackReply {
+  [Required] FeedbackAsk Ask;
+  FeedbackRating Rating;
+  [Classification(Personal.Content), MaxLength(2000)] string? Comment;
+  DateTime At;
+  FeedbackReplyState State;                          // no default — FeedbackReplying owns it
+  /// Why it was not applied.
+  [MaxLength(300)] string? Problem;
+  security {
+    // The people who did the work, and the person it was asked of.
+    allow read when ReadsFeedback;
+    allow read where Ask.Person != null && Ask.Person == user;
+    allow read by FeedbackLink where Ask == FeedbackLink.Row;
+    // SECURITY-INVARIANT(feedback-is-answered-only-by-its-person) — the request half: the account the question was
+    // asked of, or the holder of its link, for that question only.
+    // (`Person != null` first: with nobody signed in, `Person == user` must never match a question asked of no account.)
+    allow create where Ask.Person != null && Ask.Person == user;
+    allow create by FeedbackLink where Ask == FeedbackLink.Row;
+    deny create where Problem != null;
+    deny update;
+    deny delete;
+  }
+}
+
+/// Where a reply stands. ⚠ Appended, never inserted.
+public enum FeedbackReplyState {
+  [Label("Waiting")] Waiting,
+  [Label("Applied")] Applied,
+  [Label("Refused")] Refused,
+}
+
+// ── asking ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A question about `about` — what `AskForFeedback` does.
+FeedbackAsk? AskAbout(Entity about, string title, Principal? person, string address, string language, Principal? by, bool mail) {
+  if (about == null) {
+    throw new ValidationException("A question is about a piece of work — pass the record it is about: "
+      + "`AskForFeedback(repair, \"Your city bike\", person: repair.Customer)`.");
+  }
+  var rules = FeedbackRulesNow();
+  if (!rules.Ask) {
+    Log.Information("Feedback: not asked about " + Records.Noun(about) + " " + about.Id.ToString() + " — asking is switched off.");
+    return null;
+  }
+  var to = (address ?? "").Trim().ToLower();
+  if (person == null && to == "") {
+    throw new ValidationException("Whom should we ask? Give their account, or the address to mail the question to.");
+  }
+  if (to != "" && (!to.Contains("@") || to.Contains(" "))) {
+    throw new ValidationException($"“{address}” is not an address a question can be mailed to.");
+  }
+  var key = person != null ? "account:" + person.Id.ToString() : "mail:" + to;
+  var now = DateTime.UtcNow;
+  var asked = FeedbackAsk.FirstOrDefault(a => a.About == about && a.PersonKey == key);
+  if (asked != null) {
+    asked.AskedAt = now;
+    asked.ClosesAt = now + rules.OpenFor;
+    asked.WithdrawnAt = null;
+    if (title.Trim() != "") { asked.Title = title.Trim(); }
+    if (to != "" && asked.Address == "") { asked.Address = to; }
+    // Answered before: they may change it again, for as long as an answer can be changed.
+    if (asked.AnsweredAt != null) { asked.ChangeUntil = now + rules.ChangeFor; }
+    return asked;
+  }
+  return new FeedbackAsk {
+    About = about, PersonKey = key, Person = person, Address = to, Language = language,
+    Title = title.Trim(), By = by, AskedAt = now, ClosesAt = now + rules.OpenFor,
+    MailAt = mail && to != "" ? now + rules.AskAfter : null,
+  };
+}
+
+/// Withdraw every unanswered question about `about`.
+int WithdrawAbout(Entity about) {
+  var now = DateTime.UtcNow;
+  var open = FeedbackAsk.Where(a => a.About == about && a.AnsweredAt == null && a.WithdrawnAt == null).ToList();
+  foreach (var a in open) { a.WithdrawnAt = now; }
+  return open.Count;
+}
+
+/// The two links a mail puts the question in — one click answers good or bad, the page lets them add a comment.
+public class FeedbackLinks {
+  public string Good = "";
+  public string Bad = "";
+  public string Page = "";
+}
+
+/// The links for `ask`, as a mail writes them.
+public FeedbackLinks FeedbackLinksOf(FeedbackAsk ask) {
+  var page = App.BaseUrl.TrimEnd('/') + "/feedback/" + $"{FeedbackLink.For(ask)}";
+  return new FeedbackLinks { Good = page + "/good", Bad = page + "/bad", Page = page };
+}
+
+/// The question, for the app's OWN mail — a mail the app sends anyway as the work is done ("your request is solved")
+/// carries it, and the kit then mails nothing of its own. Answers the links to put in it (`FeedbackMailQuestion`), or
+/// null when there is nothing to ask in this mail: the kit mails it later ("Ask after" is set), it was already in a
+/// mail since it was asked, or it is answered for good, closed or withdrawn.
+public FeedbackLinks? TakeFeedbackMail(FeedbackAsk? ask) {
+  if (ask == null) { return null; }
+  var now = DateTime.UtcNow;
+  if (ask.MailAt != null && ask.MailAt > now) { return null; }
+  if (ask.MailedAt != null && ask.MailedAt >= ask.AskedAt) { return null; }
+  var stage = FeedbackStageOf(ask, now, false);
+  if (stage != FeedbackStage.Open && stage != FeedbackStage.Answered) { return null; }
+  ask.MailedAt = now;
+  return FeedbackLinksOf(ask);
+}
+
+/// Mails each question when its time comes — after the commit that asked, so nobody is asked about work rolled back.
+public workflow FeedbackMailing {
+  Tracks    = FeedbackAsk.Mail;
+  Autostart = true;
+  Initial   = Waiting;
+
+  state Waiting {
+    Expire { Within = MailWaitOf(this.Item); Accrues = false; }
+    on Expire {
+      if (MailFeedbackQuestion(this.Item)) { goto Mailed; }
+      goto NotMailed;
+    }
+  }
+
+  terminal success Mailed { }
+  terminal cancel NotMailed { }
+}
+
+/// How long the question waits before the kit mails it: "Ask after", from when it was asked.
+TimeSpan MailWaitOf(FeedbackAsk ask) {
+  if (ask.MailAt == null) { return TimeSpan.Zero; }
+  var wait = ask.MailAt.Value - ask.AskedAt;
+  return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
+}
+
+/// Mail `ask`'s question, when it is still worth asking. Answers whether it went (or already went with the app's mail).
+bool MailFeedbackQuestion(FeedbackAsk ask) {
+  // The retention sweep runs from the first question an app ever asks.
+  if (!FeedbackWatch.Any()) { new FeedbackWatch(); }
+  if (ask.MailedAt != null) { return true; }
+  if (ask.MailAt == null || ask.Address == "") {
+    ask.Problem = "Asked in the app only — there is no address to mail it to.";
+    return false;
+  }
+  var now = DateTime.UtcNow;
+  var stage = FeedbackStageOf(ask, now, false);
+  if (stage != FeedbackStage.Open) {
+    ask.Problem = "Not mailed: by its time it was " + stage.Label.ToLower() + ".";
+    return false;
+  }
+  var said = FeedbackQuestionMail(ask, FeedbackLinksOf(ask));
+  SendMail(new MailMessage { To = [ask.Address], Subject = said.Subject, Html = said.Html, Text = said.Text },
+           "feedback-question-" + ask.Id.ToString());
+  ask.MailedAt = now;
+  Log.Information("Feedback: question " + ask.Id.ToString() + " mailed.");
+  return true;
+}
+
+// ── answering ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A question as the person answering reads it.
+public class FeedbackView {
+  public Guid Ask;
+  public FeedbackStage Stage = FeedbackStage.Open;
+  /// What the work was.
+  public string Title = "";
+  /// Who asks — "Workshop".
+  public string AppName = "";
+  public FeedbackRating? Rating;
+  public string Comment = "";
+  public DateTime ClosesAt;
+  public DateTime? AnsweredAt;
+  /// Until when the answer can be changed — none until it is answered.
+  public DateTime? ChangeUntil;
+}
+
+/// Where `ask` stands at `now`. `pending`: a reply they made is waiting to be applied — it counts as answered.
+public FeedbackStage FeedbackStageOf(FeedbackAsk ask, DateTime now, bool pending) {
+  var answered = ask.AnsweredAt != null || pending;
+  if (!answered && ask.WithdrawnAt != null) { return FeedbackStage.Withdrawn; }
+  if (answered) {
+    if (ask.ChangeUntil != null && now > ask.ChangeUntil.Value) { return FeedbackStage.Settled; }
+    return FeedbackStage.Answered;
+  }
+  if (now > ask.ClosesAt) { return FeedbackStage.Closed; }
+  return FeedbackStage.Open;
+}
+
+/// `ask` as its person reads it — with their latest reply when it is still being applied, so an answer they just gave
+/// reads as given.
+FeedbackView FeedbackViewOf(FeedbackAsk ask) {
+  var now = DateTime.UtcNow;
+  var waiting = FeedbackReply.Where(r => r.Ask == ask && r.State == FeedbackReplyState.Waiting).OrderByDescending(r => r.At).FirstOrDefault();
+  var view = new FeedbackView { Ask = ask.Id, Stage = FeedbackStageOf(ask, now, waiting != null), Title = ask.Title,
+                                AppName = FeedbackAppName(), Rating = ask.Rating, Comment = ask.Comment ?? "",
+                                ClosesAt = ask.ClosesAt, AnsweredAt = ask.AnsweredAt, ChangeUntil = ask.ChangeUntil };
+  if (waiting != null) {
+    view.Rating = waiting.Rating;
+    view.Comment = waiting.Comment ?? "";
+    if (view.AnsweredAt == null) { view.AnsweredAt = waiting.At; }
+  }
+  return view;
+}
+
+/// The question a mailed link opens — for a person who is not signed in.
+[AllowAnonymous]
+public FeedbackView FeedbackByLink(FeedbackLink link) {
+  return FeedbackViewOf(link.Row);
+}
+
+/// Answer the question a mailed link opens — or change the answer, while it can be changed.
+[AllowAnonymous]
+public FeedbackView AnswerFeedbackByLink(FeedbackLink link, FeedbackRating rating, string comment = "") {
+  return GiveFeedbackReply(link.Row, rating, comment);
+}
+
+/// The signed-in reader's question about the work whose id is `about`, or null when they were not asked about it — what
+/// `FeedbackPrompt` shows.
+public FeedbackView? MyFeedback(Guid about) {
+  var me = Session.CurrentUser;
+  if (me == null) { return null; }
+  var ask = FeedbackAsk.Where(a => a.About.Id == about && a.Person == me).OrderByDescending(a => a.AskedAt).FirstOrDefault();
+  return ask == null ? null : FeedbackViewOf(ask);
+}
+
+/// Answer a question the signed-in reader was asked — or change their answer, while it can be changed.
+public FeedbackView AnswerMyFeedback(Guid ask, FeedbackRating rating, string comment = "") {
+  var me = Session.CurrentUser;
+  var mine = me == null ? null : FeedbackAsk.FirstOrDefault(a => a.Id == ask && a.Person == me);
+  if (mine == null) { throw new ValidationException("That is not a question we asked you."); }
+  return GiveFeedbackReply(mine, rating, comment);
+}
+
+/// A reply to `ask`, refused here with the reason a person reads — and checked again when it is applied.
+FeedbackView GiveFeedbackReply(FeedbackAsk ask, FeedbackRating rating, string comment) {
+  var words = comment.Trim();
+  if (words.Length > 2000) { throw new ValidationException("Keep your comment under 2,000 characters."); }
+  var now = DateTime.UtcNow;
+  var view = FeedbackViewOf(ask);
+  if (view.Stage == FeedbackStage.Withdrawn) {
+    throw new ValidationException("We are not asking about this any more — the work was opened again. We will ask when it is done.");
+  }
+  if (view.Stage == FeedbackStage.Closed) {
+    throw new ValidationException($"This question closed on {ask.ClosesAt:d MMMM yyyy}. Thank you all the same.");
+  }
+  if (view.Stage == FeedbackStage.Settled) {
+    throw new ValidationException("Your answer can no longer be changed. Thank you for it.");
+  }
+  new FeedbackReply { Ask = ask, Rating = rating, Comment = words == "" ? null : words, At = now };
+  UnitOfWork.Commit();
+  return FeedbackViewOf(ask);
+}
+
+/// Applies each reply after the commit that wrote it — as the app, so the work's own record can say what was answered.
+public workflow FeedbackReplying {
+  Tracks    = FeedbackReply.State;
+  Autostart = true;
+  Initial   = Waiting;
+
+  state Waiting {
+    Expire { Within = TimeSpan.Zero; Accrues = false; }
+    on Expire {
+      if (ApplyFeedbackReply(this.Item)) { goto Applied; }
+      goto Refused;
+    }
+  }
+
+  terminal success Applied { }
+  terminal cancel Refused { }
+}
+
+/// Apply `reply` to its question — checked again against the windows AT THE TIME IT WAS GIVEN, then the app is told.
+/// Answers whether it was applied.
+bool ApplyFeedbackReply(FeedbackReply reply) {
+  var ask = reply.Ask;
+  var rules = FeedbackRulesNow();
+  var at = reply.At;
+  FeedbackChange change = FeedbackChange.First;
+  if (ask.AnsweredAt == null) {
+    if (ask.WithdrawnAt != null && ask.WithdrawnAt.Value <= at) {
+      reply.Problem = "The question had been withdrawn.";
+      return false;
+    }
+    // The question's own window, from the time the reply was given — guarded by tests/answers.test.osy
+    // `a_question_past_its_days_can_no_longer_be_answered`.
+    if (at > ask.ClosesAt) {
+      reply.Problem = "The question had closed.";
+      return false;
+    }
+    ask.AnsweredAt = at;
+    ask.ChangeUntil = at + rules.ChangeFor;
+  } else {
+    if (ask.ChangeUntil != null && at > ask.ChangeUntil.Value) {
+      reply.Problem = "The answer could no longer be changed.";
+      return false;
+    }
+    if (ask.Rating == reply.Rating && (ask.Comment ?? "") == (reply.Comment ?? "")) { return true; }
+    change = FeedbackChange.Changed;
+    ask.ChangedAt = at;
+    ask.Changes = ask.Changes + 1;
+  }
+  ask.Rating = reply.Rating;
+  ask.Comment = reply.Comment;
+  Log.Information("Feedback: " + (change == FeedbackChange.First ? "answered" : "changed") + " " + reply.Rating.ToString().ToLower()
+    + " for question " + ask.Id.ToString() + ".");
+  Raise(new FeedbackAnswered { Ask = ask, Change = change });
+  return true;
+}
+
+// ── what was said, for the people who did the work ────────────────────────────────────────────────────────────────────
+
+/// One answer, as the people who did the work read it.
+public class FeedbackAnswerLine {
+  public Guid Ask;
+  public FeedbackRating Rating = FeedbackRating.Good;
+  public string Comment = "";
+  public DateTime At;
+  /// Changed after it was first given.
+  public bool Changed;
+}
+
+/// What was answered about `about` — newest first, as the reader may read them.
+List<FeedbackAnswerLine> AnswerLines(Entity about) {
+  return FeedbackAsk.Where(a => a.About == about && a.Rating != null)
+    .OrderByDescending(a => a.AnsweredAt).ToList()
+    .Select(a => new FeedbackAnswerLine { Ask = a.Id, Rating = a.Rating!.Value, Comment = a.Comment ?? "",
+                                          At = a.ChangedAt ?? a.AnsweredAt!.Value, Changed = a.Changes > 0 }).ToList();
+}
+
+/// The latest answer about `about`.
+FeedbackRating? LatestRating(Entity about) {
+  var latest = FeedbackAsk.Where(a => a.About == about && a.Rating != null)
+    .OrderByDescending(a => a.AnsweredAt).FirstOrDefault();
+  return latest == null ? null : latest.Rating;
+}

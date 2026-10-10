@@ -1,0 +1,15 @@
+// The producer's test project for Osysharp.SatisfactionSurveys — a cycle workshop's repair bookings: a mechanic finishes a repair
+// and the customer is asked how it went, signed in on the booking's page or from the mail when they booked by phone.
+// NOT a helpdesk on purpose: the kit knows nothing of tickets, and this app asks about its own `Repair` rows.
+app FeedbackKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.SatisfactionSurveys@0;
+  use Osysharp.Mail@0;
+  use Osysharp.EmailTemplates@0;
+  use Osysharp.Workflow;
+  use Osysharp.Ui;
+  // "Who changed this and when" on the settings page.
+  use Osysharp.Observability;
+}

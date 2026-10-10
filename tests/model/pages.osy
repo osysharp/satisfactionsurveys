@@ -1,0 +1,58 @@
+namespace FeedbackKitTests;
+
+using Osysharp.SatisfactionSurveys;
+
+// The workshop's pages: a customer's repair, with the question on it once it is done; and the mechanics' results. The
+// page a mailed link opens is the kit's own (`/feedback/{link}`), and so is the settings page (`/settings/feedback`).
+
+/// The workshop's front door: a customer's repairs, and the results for its mechanics.
+[Title("Spoke & Chain")]
+[Route("/")]
+[Authorize]
+[Render(CSR)]
+component Home() {
+  live var repairs = Repair.OrderBy(r => r.Bike).ToList();
+  render {
+    Stack(gap: 3, p: 5, w: "100%", maxW: "640px", mx: "auto") {
+      PageHead("Your repairs");
+      if (repairs.Count == 0) { EmptyState("No repairs yet", body: "Bikes you book in appear here."); }
+      foreach (var r in repairs) { Link(href: "/repairs/" + r.Id, color: Colors.OnSurface) { Text(r.Bike); } }
+    }
+  }
+}
+
+/// One repair, as its customer reads it — where a repair opens.
+[Title("Your repair")]
+[Route("/repairs/{id}")]
+[Opens(Repair)]
+[Authorize]
+[Render(CSR)]
+component RepairPage(Guid id) {
+  live var repairs = Repair.Where(r => r.Id == id).ToList();
+  render {
+    Stack(gap: 4, p: 5, w: "100%", maxW: "640px", mx: "auto") {
+      if (repairs.Count == 0) { EmptyState("Not found", body: "This repair is not one you can read."); }
+      foreach (var r in repairs) {
+        Stack(gap: 1) {
+          Text(r.Bike, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+          Text(r.Done ? "Ready to collect" : "In the workshop", color: Colors.TextSecondary);
+        }
+        if (r.Done) { FeedbackPrompt(r.Id); }
+      }
+    }
+  }
+}
+
+/// How the workshop is doing, for its mechanics.
+[Title("How are we doing?")]
+[Route("/results")]
+[Authorize(IsMechanic)]
+[Render(CSR)]
+component ResultsPage() {
+  render {
+    Stack(gap: 4, p: 5, w: "100%", maxW: "860px", mx: "auto") {
+      PageHead("How are we doing?", subtitle: "What customers said about their repairs.");
+      FeedbackResults();
+    }
+  }
+}

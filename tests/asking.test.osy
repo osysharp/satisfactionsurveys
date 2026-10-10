@@ -1,0 +1,105 @@
+// Asking: the owner decides whether and when, the app's own mail can carry the question, results count and keep comments
+// to those who may read the work, and nothing is kept past its time.
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using Osysharp.Mail;
+using FeedbackKitTests;
+
+/// The owner sets the workshop's feedback settings.
+void Settings(bool ask, TimeSpan askAfter, TimeSpan keepFor) {
+  runas (Olle) {
+    var row = FeedbackSettings.FirstOrDefault() ?? new FeedbackSettings();
+    row.Ask = ask;
+    row.AskAfter = askAfter;
+    row.KeepFor = keepFor;
+    UnitOfWork.Commit();
+  }
+}
+
+[Test(Workshop)]
+void asking_switched_off_asks_nobody() {
+  Settings(false, TimeSpan.Zero, TimeSpan.FromDays(730));
+  Finish("cargo bike");
+  Assert.Empty(MailTo("lena@riders.test"));
+  var r = RepairOf("cargo bike");
+  runas (Olle) { Assert.Equal(0, FeedbackAsk.Count(a => a.About == r)); }
+}
+
+[Test(Workshop)]
+void the_question_is_mailed_when_ask_after_is_up() {
+  TestClock.Set(new DateTime(2030, 5, 6, 9, 0, 0));
+  Settings(true, TimeSpan.FromHours(2), TimeSpan.FromDays(730));
+  Finish("cargo bike");
+  Assert.Empty(MailTo("lena@riders.test"));
+  TestClock.Advance(TimeSpan.FromHours(2) + TimeSpan.FromMinutes(1));
+  Background.Settle();
+  Assert.Equal(1, MailTo("lena@riders.test").Count);
+}
+
+[Test(Workshop)]
+void the_apps_own_mail_can_carry_the_question_and_the_kit_then_mails_none() {
+  var r = RepairOf("cargo bike");
+  FeedbackLinks? links = null;
+  runas (Mia) {
+    var asked = AskForFeedback(r, "Your cargo bike, new brake pads", address: "lena@riders.test");
+    links = TakeFeedbackMail(asked);
+    // Taken once: the same question is not put in a second mail.
+    Assert.Null(TakeFeedbackMail(asked));
+    UnitOfWork.Commit();
+  }
+  Assert.True(links!.Good.EndsWith("/good"));
+  Assert.True(links!.Bad.EndsWith("/bad"));
+  Background.Settle();
+  Assert.Empty(MailTo("lena@riders.test"));
+}
+
+[Test(Workshop)]
+void a_question_is_about_a_piece_of_work_and_asking_about_nothing_is_refused() {
+  runas (Mia) {
+    var ex = Assert.Throws<ValidationException>(() => AskForFeedback(null, "x", address: "a@b.test"));
+    Assert.Contains("A question is about a piece of work", ex.Message);
+  }
+}
+
+[Test(Workshop)]
+void results_count_good_and_bad_and_show_a_comment_only_to_who_may_read_the_work() {
+  Finish("city bike");
+  Finish("cargo bike");
+  Finish("fleet e-bike");
+  runas (Kim) { AnswerMyFeedback(KimsQuestion("city bike")!.Ask, FeedbackRating.Good, "Quick and friendly."); }
+  AnswerFeedbackByLink(LinkFor("cargo bike"), FeedbackRating.Bad, "The front brake still squeaks.");
+  AnswerFeedbackByLink(LinkFor("fleet e-bike"), FeedbackRating.Good, "Fleet bike 14 runs well.");
+  Background.Settle();
+  runas (Mia) {
+    var s = SummariseFeedback();
+    Assert.Equal(3, s.Asked);
+    Assert.Equal(3, s.Answered);
+    Assert.Equal(2, s.Good);
+    Assert.Equal(1, s.Bad);
+    Assert.Equal(67, s.PercentGood);
+    Assert.Equal(12, s.Weeks.Count);
+    Assert.Equal(3, s.Weeks[11].Good + s.Weeks[11].Bad);
+    // The fleet's repair is the owner's to read, so its comment is not shown to a mechanic.
+    Assert.Equal(2, s.Recent.Count);
+    Assert.False(s.Recent.Any(c => c.Comment.Contains("Fleet")));
+  }
+  runas (Olle) { Assert.Equal(3, SummariseFeedback().Recent.Count); }
+  // A customer reads no results.
+  runas (Kim) { Assert.Throws<Exception>(() => SummariseFeedback()); }
+}
+
+[Test(Workshop)]
+void questions_and_answers_are_deleted_once_past_their_keeping_time() {
+  TestClock.Set(new DateTime(2030, 5, 6, 9, 0, 0));
+  Settings(true, TimeSpan.Zero, TimeSpan.FromDays(30));
+  Finish("cargo bike");
+  AnswerFeedbackByLink(LinkFor("cargo bike"), FeedbackRating.Good);
+  Background.Settle();
+  TestClock.Advance(TimeSpan.FromDays(31));
+  Background.Settle();
+  var r = RepairOf("cargo bike");
+  runas (Olle) {
+    Assert.Equal(0, FeedbackAsk.Count(a => a.About == r));
+    Assert.Equal(0, FeedbackReply.Count());
+  }
+}

@@ -1,0 +1,133 @@
+// THE QUESTION ON SCREEN — driven as a person answers it: on the repair's page signed in, from the mail's link with no
+// account, a changed mind, a settled answer, a closed question, one no longer asked, and the mechanics' results — wide
+// and on a phone, light and dark. `osy test --pixels` photographs each (`Ui.Shot`).
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using FeedbackKitTests;
+
+/// The path of the page a link opens — `/feedback/<link>`, with `/good` or `/bad` for the mail's buttons.
+string PageOf(FeedbackLink link, string choice = "") {
+  return "/feedback/" + $"{link}" + (choice == "" ? "" : "/" + choice);
+}
+
+[Test(Workshop)]
+void the_question_on_the_repair_page_answers_with_one_click_and_takes_a_comment() {
+  Finish("city bike");
+  var r = RepairOf("city bike");
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Kim);
+  Ui.Visit("/repairs/" + r.Id);
+  Assert.Visible("How did we do?");
+  Assert.Visible("Your city bike, full service");
+  Ui.Shot("prompt-open-wide-light");
+  Ui.Click("Good");
+  Assert.Visible("Thank you for telling us");
+  Assert.Visible("You said");
+  Ui.Fill("Anything to add? (optional)", "Quick, and they explained what they changed.");
+  Ui.Click("Send comment");
+  Assert.Visible("Save comment");
+  Ui.Shot("prompt-answered-wide-light");
+  Ui.Theme("dark");
+  Ui.Shot("prompt-answered-wide-dark");
+  Background.Settle();
+  Assert.Equal("Quick, and they explained what they changed.", AskedAbout("city bike").Comment);
+}
+
+[Test(Workshop)]
+void a_bad_from_the_mail_is_recorded_as_the_page_opens_and_asks_what_went_wrong() {
+  Finish("cargo bike");
+  var link = LinkFor("cargo bike");
+  Ui.Viewport(390, 844);
+  Ui.Visit(PageOf(link, "bad"));
+  Assert.Visible("Thank you for telling us");
+  Assert.Visible("What went wrong? (optional)");
+  Ui.Shot("link-bad-phone-light");
+  Ui.Theme("dark");
+  Ui.Shot("link-bad-phone-dark");
+  Ui.Theme("light");
+  Ui.Fill("What went wrong? (optional)", "The front brake still squeaks.");
+  Ui.Click("Send comment");
+  // Changed her mind on the same page.
+  Ui.Click("Change to good");
+  Assert.Visible("Change to bad");
+  Background.Settle();
+  var asked = AskedAbout("cargo bike");
+  Assert.Equal(FeedbackRating.Good, asked.Rating);
+  Assert.Equal("The front brake still squeaks.", asked.Comment);
+}
+
+[Test(Workshop)]
+void the_link_page_says_when_an_answer_is_settled_and_when_a_question_has_closed() {
+  TestClock.Set(new DateTime(2030, 5, 6, 9, 0, 0));
+  Finish("cargo bike");
+  Finish("city bike");
+  var cargo = LinkFor("cargo bike");
+  AnswerFeedbackByLink(cargo, FeedbackRating.Good, "Fast and friendly.");
+  Background.Settle();
+  TestClock.Advance(TimeSpan.FromDays(31));
+  Ui.Viewport(1440, 900);
+  Ui.Visit(PageOf(cargo));
+  Assert.Visible("Your answer can no longer be changed.");
+  Assert.Visible("Fast and friendly.");
+  Ui.Shot("link-settled-wide-light");
+  // Kim never answered hers, and it has closed.
+  Ui.SignInAs(Kim);
+  Ui.Visit("/repairs/" + RepairOf("city bike").Id);
+  Assert.Visible("This question has closed");
+  Ui.Shot("prompt-closed-wide-light");
+}
+
+[Test(Workshop)]
+void a_repair_brought_back_says_the_question_is_no_longer_asked() {
+  Finish("cargo bike");
+  var link = LinkFor("cargo bike");
+  var r = RepairOf("cargo bike");
+  runas (Mia) { ReopenRepair(Repair.Single(x => x.Id == r.Id)); }
+  Ui.Viewport(1440, 900);
+  Ui.Visit(PageOf(link, "good"));
+  Assert.Visible("We are not asking about this now");
+  Assert.Hidden("Thank you for telling us");
+  Ui.Shot("link-withdrawn-wide-light");
+}
+
+[Test(Workshop)]
+void the_mechanics_read_how_it_is_going() {
+  Finish("city bike");
+  Finish("cargo bike");
+  runas (Kim) { AnswerMyFeedback(KimsQuestion("city bike")!.Ask, FeedbackRating.Good, "Quick and friendly."); }
+  AnswerFeedbackByLink(LinkFor("cargo bike"), FeedbackRating.Bad, "The front brake still squeaks.");
+  Background.Settle();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Mia);
+  Ui.Visit("/results");
+  Assert.Visible("50%");
+  Assert.Visible("The front brake still squeaks.", within: "Comments");
+  Ui.Shot("results-wide-light");
+  Ui.Theme("dark");
+  Ui.Shot("results-wide-dark");
+  Ui.Theme("light");
+  Ui.Viewport(390, 844);
+  Ui.Shot("results-phone-light");
+}
+
+[Test(Workshop)]
+void results_with_nobody_asked_say_what_will_appear() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Mia);
+  Ui.Visit("/results");
+  Assert.Visible("Nobody has been asked yet");
+  Ui.Shot("results-empty-wide-light");
+}
+
+[Test(Workshop)]
+void the_owner_decides_whether_and_when_people_are_asked() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Olle);
+  Ui.Visit("/settings/feedback");
+  Assert.Visible("Ask how it went");
+  Ui.Shot("settings-wide-light");
+  Ui.Click("Ask how it went");
+  Ui.Click("Save");
+  Assert.Visible("Feedback settings saved.");
+  runas (Olle) { Assert.False(FeedbackSettings.Single().Ask); }
+}

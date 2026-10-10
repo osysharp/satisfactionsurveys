@@ -1,0 +1,179 @@
+// THE QUESTION ON SCREEN — the page a mailed link opens (no account), and the same question in the app's own page for
+// somebody signed in. One card, five ways it can stand: open (good or bad, one click), answered (thank you, room for a
+// comment, change your mind while you may), settled, closed, and no longer asked.
+//
+// ⚑ ONE CLICK IS AN ANSWER. Pressing good or bad records it at once; the comment is extra, never a second step the
+//   answer waits on. From a mail, the link for "good" or "bad" records it as the page opens.
+namespace Osysharp.SatisfactionSurveys;
+
+using Osysharp.Ui;
+
+/// The question about one piece of work, for the signed-in person it was asked of — on the work's own page in the app
+/// (`FeedbackPrompt(repair.Id)`). Shows nothing when they were not asked about it.
+[Composable]
+public component FeedbackPrompt(Guid about) {
+  FeedbackView? view = null;
+  string problem = "";
+  on mount {
+    try { view = MyFeedback(about); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Rate(FeedbackRating rating) {
+    problem = "";
+    try { view = AnswerMyFeedback(view!.Ask, rating, view!.Comment); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Say(string comment) {
+    problem = "";
+    try { view = AnswerMyFeedback(view!.Ask, view!.Rating ?? FeedbackRating.Good, comment); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    if (view != null) { FeedbackCard(view!, Rate, Say, problem); }
+  }
+}
+
+/// The page a mailed link opens: the question, for somebody who is not signed in. An app takes it over by name to put
+/// it in its own frame — `component FeedbackByLinkPage(FeedbackLink link) { render { FeedbackByLink(link, ""); } }` under
+/// its `[Layout]`.
+[Route("/feedback/{link}")] [AllowAnonymous] [Render(CSR)] [Title("How did we do?")]
+public component FeedbackByLinkPage(FeedbackLink link) {
+  render { Box(p: 5, w: "100%", maxW: "560px", mx: "auto") { FeedbackByLinkPanel(link, ""); } }
+}
+
+/// The page the mail's "Good" or "Bad" opens — the answer is recorded as it opens (`choice` is "good" or "bad").
+[Route("/feedback/{link}/{choice}")] [AllowAnonymous] [Render(CSR)] [Title("Thank you")]
+public component FeedbackChoicePage(FeedbackLink link, string choice) {
+  render { Box(p: 5, w: "100%", maxW: "560px", mx: "auto") { FeedbackByLinkPanel(link, choice); } }
+}
+
+/// The question a link opens, as a card — with `choice` ("good", "bad") answered as it opens when the question is still
+/// open. For an app's own page around it; `showName: false` when its frame already says whose it is.
+[Composable]
+public component FeedbackByLinkPanel(FeedbackLink link, string choice = "", bool showName = true) {
+  FeedbackView? view = null;
+  string problem = "";
+  on mount {
+    try {
+      view = FeedbackByLink(link);
+      var chosen = ChoiceNamed(choice);
+      if (chosen != null && view!.Stage == FeedbackStage.Open) { view = AnswerFeedbackByLink(link, chosen!.Value, ""); }
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Rate(FeedbackRating rating) {
+    problem = "";
+    try { view = AnswerFeedbackByLink(link, rating, view!.Comment); } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Say(string comment) {
+    problem = "";
+    try { view = AnswerFeedbackByLink(link, view!.Rating ?? FeedbackRating.Good, comment); } catch (Exception ex) { problem = ex.Message; }
+  }
+  render {
+    Stack(gap: 3, w: "100%") {
+      // Opened from a mail, with no frame of the app's around it: whose question this is comes first.
+      if (showName && view != null && view!.AppName != "us") {
+        Text(view!.AppName, fontSize: FontSize.Subhead, fontWeight: FontWeight.Semibold, fontFamily: Font.Display,
+             color: Colors.TextSecondary);
+      }
+      if (view == null && problem == "") {
+        Card() { Stack(gap: 3) { SkeletonText(); SkeletonText(); } }
+      }
+      if (view == null && problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (view != null) { FeedbackCard(view!, Rate, Say, problem); }
+    }
+  }
+}
+
+/// "good" → Good, "bad" → Bad, anything else → none.
+FeedbackRating? ChoiceNamed(string choice) {
+  var c = choice.Trim().ToLower();
+  if (c == "good") { return FeedbackRating.Good; }
+  if (c == "bad") { return FeedbackRating.Bad; }
+  return null;
+}
+
+/// The question as it stands — the card both the link page and the in-app prompt show. `onRate` answers (or changes the
+/// answer), `onSay` sends the comment with the answer as it is.
+[Composable]
+public component FeedbackCard(FeedbackView view, Action<FeedbackRating> onRate, Action<string> onSay, string problem = "") {
+  string comment = view.Comment;
+  live var saved = view.Comment;
+  render {
+    Card() {
+      Stack(gap: 4, label: "How did we do?") {
+        Stack(gap: 1) {
+          if (view.Stage == FeedbackStage.Open) {
+            Text("How did we do?", fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold, letterSpacing: "-0.01em");
+          }
+          if (view.Stage == FeedbackStage.Answered || view.Stage == FeedbackStage.Settled) {
+            Row(gap: 2, align: Align.Center, animation: KitArrive) {
+              Icon(Icons.CheckCircle, size: 22, color: Colors.Success);
+              Text("Thank you for telling us", fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold,
+                   letterSpacing: "-0.01em");
+            }
+          }
+          if (view.Stage == FeedbackStage.Closed) {
+            Text("This question has closed", fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+          }
+          if (view.Stage == FeedbackStage.Withdrawn) {
+            Text("We are not asking about this now", fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+          }
+          if (view.Title != "") { Text(view.Title, color: Colors.TextSecondary); }
+        }
+
+        if (view.Stage == FeedbackStage.Open) {
+          Row(gap: 3, wrap: Wrapping.Wrap) {
+            Button("Good", onPress: () => onRate(FeedbackRating.Good), tone: Tone.Primary, announceAs: "Good — it went well");
+            Button("Bad", onPress: () => onRate(FeedbackRating.Bad), announceAs: "Bad — it did not go well");
+          }
+          Text("One click is your answer. You can add a comment after.", fontSize: FontSize.Caption, color: Colors.TextMuted);
+        }
+
+        if (view.Stage == FeedbackStage.Answered || view.Stage == FeedbackStage.Settled) {
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+            Text("You said", color: Colors.TextSecondary);
+            Badge(view.Rating == FeedbackRating.Bad ? "Bad" : "Good",
+                  tone: view.Rating == FeedbackRating.Bad ? Tone.Danger : Tone.Success);
+            if (view.Stage == FeedbackStage.Answered) {
+              if (view.Rating == FeedbackRating.Bad) {
+                Button("Change to good", onPress: () => onRate(FeedbackRating.Good), tone: Tone.Ghost, size: Size.Sm);
+              } else {
+                Button("Change to bad", onPress: () => onRate(FeedbackRating.Bad), tone: Tone.Ghost, size: Size.Sm);
+              }
+            }
+          }
+        }
+
+        if (view.Stage == FeedbackStage.Answered) {
+          Stack(gap: 2) {
+            TextAreaField(view.Rating == FeedbackRating.Bad ? "What went wrong? (optional)" : "Anything to add? (optional)",
+                          value: comment, rows: 3);
+            Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap) {
+              Button(saved == "" ? "Send comment" : "Save comment", onPress: () => onSay(comment), tone: Tone.Primary,
+                     disabled: comment.Trim() == saved.Trim());
+              if (saved != "" && comment.Trim() == saved.Trim()) { Done("Comment saved"); }
+              if (view.ChangeUntil != null) {
+                Text($"You can change your answer until {view.ChangeUntil.Value:d MMMM}.", fontSize: FontSize.Caption,
+                     color: Colors.TextMuted);
+              }
+            }
+          }
+        }
+
+        if (view.Stage == FeedbackStage.Settled) {
+          if (view.Comment != "") {
+            Box(borderLW: 3, border: Colors.Border, pl: 3) { Text(view.Comment, color: Colors.OnSurface, whiteSpace: WhiteSpace.PreWrap); }
+          }
+          Text("Your answer can no longer be changed.", fontSize: FontSize.Caption, color: Colors.TextMuted);
+        }
+
+        if (view.Stage == FeedbackStage.Closed) {
+          Text($"It was open until {view.ClosesAt:d MMMM yyyy}. Thank you all the same.", color: Colors.TextSecondary);
+        }
+
+        if (view.Stage == FeedbackStage.Withdrawn) {
+          Text("The work was opened again. We will ask when it is done.", color: Colors.TextSecondary);
+        }
+
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      }
+    }
+  }
+}

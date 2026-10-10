@@ -1,0 +1,153 @@
+namespace Osysharp.SatisfactionSurveys;
+
+using Osysharp.Identity;
+using Osysharp.Workflow;
+
+// ── the results ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// How it is going — what `SummariseFeedback` answers, and `FeedbackResults` shows.
+public class FeedbackSummary {
+  /// Questions asked in the period (withdrawn ones not counted).
+  public int Asked;
+  public int Answered;
+  public int Good;
+  public int Bad;
+  /// Good, as a whole percentage of those answered — none when nobody answered.
+  public int? PercentGood;
+  /// Answered, as a whole percentage of those asked — none when nobody was asked.
+  public int? PercentAnswered;
+  /// Week by week, oldest first — the last `weeks` seven-day spans up to now.
+  public List<FeedbackWeek> Weeks = [];
+  /// What people wrote, newest first — only about work the reader may read.
+  public List<FeedbackComment> Recent = [];
+}
+
+/// One seven-day span of answers.
+public class FeedbackWeek {
+  public DateTime Starts;
+  public int Good;
+  public int Bad;
+  public int? PercentGood;
+}
+
+/// One comment, as the results list it.
+public class FeedbackComment {
+  public Guid Ask;
+  public FeedbackRating Rating = FeedbackRating.Good;
+  public string Comment = "";
+  public DateTime At;
+  /// What the work was.
+  public string Title = "";
+  /// Where the work opens — the page that `[Opens]` it.
+  public string Link = "";
+}
+
+/// One question, as the summary counts it.
+class FeedbackCount {
+  public Guid Id;
+  public FeedbackRating? Rating;
+  public string Comment = "";
+  public string Title = "";
+  public DateTime? AnsweredAt;
+  public DateTime? WithdrawnAt;
+}
+
+/// How it went over the last `weeks` weeks (1–52) — what `FeedbackResults` shows.
+[Authorize(ReadsFeedback)]
+public FeedbackSummary SummariseFeedback(int weeks = 12) { return Summarise(weeks); }
+
+/// The summary over the last `weeks` weeks.
+FeedbackSummary Summarise(int weeks) {
+  var span = weeks < 1 ? 1 : (weeks > 52 ? 52 : weeks);
+  var now = DateTime.UtcNow;
+  var since = now - TimeSpan.FromDays(7 * span);
+  var rows = FeedbackAsk.Where(a => a.AskedAt >= since)
+    .Select(a => new FeedbackCount { Id = a.Id, Rating = a.Rating, Comment = a.Comment ?? "",
+                                     Title = a.Title, AnsweredAt = a.AnsweredAt, WithdrawnAt = a.WithdrawnAt }).ToList();
+  var asked = rows.Where(r => r.Rating != null || r.WithdrawnAt == null).ToList();
+  var answered = asked.Where(r => r.Rating != null).ToList();
+  var summary = new FeedbackSummary { Asked = asked.Count, Answered = answered.Count,
+                                      Good = answered.Count(r => r.Rating == FeedbackRating.Good),
+                                      Bad = answered.Count(r => r.Rating == FeedbackRating.Bad) };
+  summary.PercentGood = summary.Answered == 0 ? null : PercentOf(summary.Good, summary.Answered);
+  summary.PercentAnswered = summary.Asked == 0 ? null : PercentOf(summary.Answered, summary.Asked);
+  for (var i = 0; i < span; i = i + 1) {
+    var starts = since + TimeSpan.FromDays(7 * i);
+    var ends = starts + TimeSpan.FromDays(7);
+    var inWeek = answered.Where(r => r.AnsweredAt != null && r.AnsweredAt.Value >= starts && r.AnsweredAt.Value < ends).ToList();
+    var good = inWeek.Count(r => r.Rating == FeedbackRating.Good);
+    summary.Weeks.Add(new FeedbackWeek { Starts = starts, Good = good, Bad = inWeek.Count - good,
+                                         PercentGood = inWeek.Count == 0 ? null : PercentOf(good, inWeek.Count) });
+  }
+  // A comment names what was done, so it is shown only to somebody who may read that work: each question's record is
+  // read AS THE READER — work they may not read reads as nothing — the records together, one read per kind of record.
+  var asks = FeedbackAsk.Where(a => a.AskedAt >= since && a.Rating != null && a.Comment != null && a.Comment != "")
+    .OrderByDescending(a => a.AnsweredAt).Take(40).ToList();
+  foreach (var a in asks) {
+    if (summary.Recent.Count >= 10) { break; }
+    var about = a.About;
+    if (about == null) { continue; }
+    summary.Recent.Add(new FeedbackComment { Ask = a.Id, Rating = a.Rating!.Value, Comment = a.Comment ?? "", At = a.AnsweredAt!.Value,
+                                             Title = a.Title, Link = Records.Link(about) });
+  }
+  return summary;
+}
+
+/// `part` of `whole`, as a whole percentage.
+int PercentOf(int part, int whole) {
+  return (int)Math.Round(part * 100.0 / whole);
+}
+
+// ── keeping nothing longer than it is needed ──────────────────────────────────────────────────────────────────────────
+
+/// Where the sweep stands. ⚠ Appended, never inserted.
+public enum FeedbackWatchState {
+  [Label("Sweeping hourly")] Watching,
+  [Label("Stopped")] Stopped,
+}
+
+/// The one row the retention sweep runs on — made when the first question is mailed or answered. Nobody writes it but
+/// the kit; whoever reads the results may see that it runs.
+public entity FeedbackWatch {
+  FeedbackWatchState State;
+  security {
+    allow read when ReadsFeedback;
+    deny create;
+    deny update;
+    deny delete;
+  }
+}
+
+/// Every hour: questions asked longer ago than "Keep answers for" are deleted, with their answers and replies.
+public workflow FeedbackSweep {
+  Tracks    = FeedbackWatch.State;
+  Autostart = true;
+  Initial   = Watching;
+
+  event Stop();
+
+  state Watching {
+    subscribe Stop() as Stopping {
+      Finished {
+        Within = TimeSpan.FromDays(36500);
+        Remind Sweep(After = TimeSpan.FromHours(1), ThenEvery = TimeSpan.FromHours(1)) { PurgeFeedback(DateTime.UtcNow); }
+        Unfinished { }
+      }
+    }
+    on Stopping() { goto Stopped; }
+  }
+  terminal cancel Stopped { }
+}
+
+/// Delete every question asked before `now` less "Keep answers for" — its replies first. One still waiting to be
+/// mailed is left for its mail to decide. Answers how many questions went.
+int PurgeFeedback(DateTime now) {
+  var before = now - FeedbackRulesNow().KeepFor;
+  var gone = FeedbackAsk.Where(a => a.AskedAt < before && a.Mail != FeedbackMailState.Waiting).ToList();
+  foreach (var a in gone) {
+    foreach (var r in FeedbackReply.Where(r => r.Ask == a).ToList()) { r.Delete(); }
+    a.Delete();
+  }
+  if (gone.Count > 0) { Log.Information("Feedback: " + gone.Count.ToString() + " questions past their keeping time were deleted."); }
+  return gone.Count;
+}

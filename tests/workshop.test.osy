@@ -1,0 +1,107 @@
+// The workshop every test starts from: Olle owns it, Mia is a mechanic, Kim books online with an account and Jo too;
+// Lena rang the shop, so all it has of her is an address. Three repairs waiting in the workshop — Kim's, Lena's, and a
+// partner fleet's that only the owner reads.
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using Osysharp.Mail;
+using FeedbackKitTests;
+
+[TestFixture]
+void Workshop() {
+  var olle = new Person { Email = "olle@spoke.test", DisplayName = "Olle Berg", CodeHash = Security.HashPassword("1111") };
+  new RoleGrant { Member = olle, Role = ShopRole.Owner };
+  var mia = new Person { Email = "mia@spoke.test", DisplayName = "Mia Holm", CodeHash = Security.HashPassword("2222") };
+  new RoleGrant { Member = mia, Role = ShopRole.Mechanic };
+  var kim = new Person { Email = "kim@riders.test", DisplayName = "Kim Lund", CodeHash = Security.HashPassword("3333") };
+  new RoleGrant { Member = kim, Role = ShopRole.Customer };
+  var jo = new Person { Email = "jo@riders.test", DisplayName = "Jo Ek", CodeHash = Security.HashPassword("4444") };
+  new RoleGrant { Member = jo, Role = ShopRole.Customer };
+  new Repair { Bike = "city bike, full service", Customer = kim, Email = "kim@riders.test" };
+  new Repair { Bike = "cargo bike, new brake pads", Email = "lena@riders.test" };
+  new Repair { Bike = "fleet e-bike, motor check", Email = "fleet@partner.test", Fleet = true };
+}
+
+principal Olle => Person.Single(p => p.Email == "olle@spoke.test");
+principal Mia => Person.Single(p => p.Email == "mia@spoke.test");
+principal Kim => Person.Single(p => p.Email == "kim@riders.test");
+principal Jo => Person.Single(p => p.Email == "jo@riders.test");
+
+/// A repair by its bike, read as the owner (who reads them all).
+Repair RepairOf(string bike) {
+  Repair? found = null;
+  runas (Olle) { found = Repair.Single(r => r.Bike.StartsWith(bike)); }
+  return found!;
+}
+
+/// Finish the repair of `bike` as Mia — or as Olle for the fleet's — and let what follows the commit happen.
+void Finish(string bike) {
+  var fleet = false;
+  Guid id = Guid.Empty;
+  runas (Olle) {
+    var r = Repair.Single(x => x.Bike.StartsWith(bike));
+    fleet = r.Fleet;
+    id = r.Id;
+  }
+  if (fleet) { runas (Olle) { FinishRepair(Repair.Single(x => x.Id == id)); } }
+  else { runas (Mia) { FinishRepair(Repair.Single(x => x.Id == id)); } }
+  Background.Settle();
+}
+
+/// The link mailed for the question about `bike` — made as the owner, who reads every question.
+FeedbackLink LinkFor(string bike) {
+  var r = RepairOf(bike);
+  FeedbackLink? link = null;
+  runas (Olle) { link = FeedbackLink.For(FeedbackAsk.Single(a => a.About == r)); }
+  return link!;
+}
+
+/// What was asked about `bike`, copied out as the owner reads it.
+class Asked {
+  public FeedbackRating? Rating;
+  public string Comment = "";
+  public int Changes;
+  public bool Withdrawn;
+  public string Problem = "";
+}
+
+Asked AskedAbout(string bike) {
+  var r = RepairOf(bike);
+  Asked? found = null;
+  runas (Olle) {
+    var a = FeedbackAsk.Single(x => x.About == r);
+    found = new Asked { Rating = a.Rating, Comment = a.Comment ?? "", Changes = a.Changes, Withdrawn = a.WithdrawnAt != null,
+                        Problem = a.Problem ?? "" };
+  }
+  return found!;
+}
+
+/// What the workshop noted on the repair of `bike` when its customer answered.
+List<string> NotesOn(string bike) {
+  var r = RepairOf(bike);
+  List<string> says = [];
+  runas (Olle) { says = RepairNote.Where(n => n.Repair.Id == r.Id).OrderBy(n => n.CreatedAt).Select(n => n.Says).ToList(); }
+  return says;
+}
+
+/// The question about `bike` as Kim reads it on her repair's page.
+FeedbackView? KimsQuestion(string bike) {
+  var r = RepairOf(bike);
+  FeedbackView? view = null;
+  runas (Kim) { view = MyFeedback(r.Id); }
+  return view;
+}
+
+/// What was mailed to `address`, oldest first — subject and text, read as the owner.
+class Sent {
+  public string Subject = "";
+  public string Text = "";
+}
+
+List<Sent> MailTo(string address) {
+  List<Sent> found = [];
+  runas (Olle) {
+    found = OutgoingMail.Where(m => m.To == address).OrderBy(m => m.CreatedAt).ToList()
+      .Select(m => new Sent { Subject = m.Subject, Text = m.Text ?? "" }).ToList();
+  }
+  return found;
+}

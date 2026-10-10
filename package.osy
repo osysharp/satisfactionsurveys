@@ -1,0 +1,49 @@
+// Osysharp.SatisfactionSurveys — asking the person a piece of work served "how did we do?", and keeping their answer: one rating
+// (good or bad) and, if they want, a comment. Asked by mail with a link that needs no account, and in the app's own page
+// for somebody signed in. Read back as a summary — how many answered, how many were good, week by week, and what people
+// wrote.
+//
+// The kit never knows WHAT was done — a repair, an order, a request for help. A question is about any record the app
+// keeps (an `Entity`); who may read what was said about it and where it opens are the record's own facts (its
+// `security { }`, the page that `[Opens]` it), so the app writes no class to tell the kit them. It asks when the work is
+// done, from anywhere — a page, a function, a workflow body:
+//     AskForFeedback(repair, "Your city bike, serviced on 4 March", person: repair.Customer, address: repair.Email);
+// and hears each answer, after the commit, as the app — the kit raises `FeedbackAnswered`, and any handler hears it:
+//     app.Feedback = new FeedbackSetup { AppName = "Workshop" };
+//     [On] void RepairAnswered(FeedbackAnswered e) { if (e.Ask.About is Repair r) { … } }
+//
+// ⚑ THE APP DECIDES which subjects are asked, when and by whom; the kit decides nothing about the work. Staff decide,
+//   on a declared settings page, whether to ask at all, how long after the work, how long a question stays open, how
+//   long an answer can be changed, and how long answers are kept.
+//
+// ⚑ ONE ANSWER PER SUBJECT PER PERSON — held by the database (`[Unique(About, PersonKey)]` on the question,
+//   whose answer is on it). Answering again changes that answer, within its window, and never adds a second.
+//
+// ⚑ AN ANSWER IS THE PERSON'S OWN, AND NOBODY ELSE'S TO WRITE. It arrives as a reply only its person can make — the
+//   account it was asked of, or whoever holds the link mailed to them — and is applied after the commit by the kit's
+//   own run, which checks the windows again and then raises `FeedbackAnswered`.
+//   SECURITY-INVARIANT(feedback-is-answered-only-by-its-person).
+//
+// Specialised scales — a 0–10 recommendation score, effort, several questions — are not here on purpose: they are
+// add-ons on this core.
+package Osysharp.SatisfactionSurveys {
+  version "0.5.2";
+  minPlatform "0.9.0";
+  // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
+  role        vertical;
+  summary     "asking the person a piece of work served how it went — one good-or-bad answer and an optional comment per subject and person (held by the database), answered from a mail link with no account or signed in on the app's page, changeable for a while, applied durably after the commit, and read back as a summary: answered, good, week by week, recent comments.";
+  model "model/**/*.osy";
+  // The personal data its own fields hold (`[Classification(Personal.X)]`): the address a question was mailed to, and
+  // what a person wrote.
+  personal Contact;
+  personal Content;
+  use Osysharp.Identity@0;
+  // Applying an answer, mailing a question later and the retention sweep are workflows.
+  use Osysharp.Workflow;
+  // The question goes through the app's mail, in the frame its other mail has.
+  use Osysharp.Mail@0;
+  use Osysharp.EmailTemplates@0;
+  // The question, the link page, the results and the settings page — themed by the app.
+  use Osysharp.Ui;
+  tests "tests";
+}

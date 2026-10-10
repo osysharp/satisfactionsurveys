@@ -1,0 +1,101 @@
+namespace FeedbackKitTests;
+
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using Osysharp.Mail;
+
+// A CYCLE WORKSHOP'S REPAIRS — the work a question is about is a `Repair`. A customer with an account books online and
+// reads their own repairs; one who rang the shop has only an address. Mechanics read every repair; a repair booked by a
+// partner fleet is private to the owner (the case a results page must never name to the wrong mechanic).
+
+[Role] enum ShopRole { Authenticator, Customer, Mechanic, Owner }
+
+policy IsMechanic => RoleGrant.Any(g => g.Member == user && (g.Role == ShopRole.Mechanic || g.Role == ShopRole.Owner));
+policy IsOwner => RoleGrant.Any(g => g.Member == user && g.Role == ShopRole.Owner);
+/// The kit's two questions: the mechanics read what customers said, and the owner decides whether and when to ask.
+policy ReadsFeedback => IsMechanic;
+policy ManagesFeedback => IsOwner;
+
+/// Somebody who signs in to the workshop — a customer or a mechanic — with a code, all a test needs.
+entity Person : Principal {
+  [MaxLength(200)] string CodeHash = "";
+  security {
+    allow read when IsAuthenticated || IsAuthenticator;
+    allow create when IsAuthenticator;
+    deny read CodeHash when !IsAuthenticator;
+  }
+}
+
+/// One repair — booked online by a customer with an account, or by phone with only an address. Who may read what was said
+/// about it is its own rule, and where it opens its own page: the workshop tells the kit neither.
+[Title(Bike)]
+entity Repair {
+  [Required, MaxLength(120)] string Bike;
+  Person? Customer;
+  [Classification(Personal.Contact), MaxLength(320)] string Email = "";
+  /// A partner fleet's repair: only the owner reads it.
+  bool Fleet;
+  bool Done;
+  security {
+    allow read, create, update when IsMechanic where !Fleet;
+    allow read, create, update when IsMechanic && IsOwner;
+    allow read when IsAuthenticated where Customer != null && Customer == user;
+  }
+}
+
+app.Feedback = new FeedbackSetup { AppName = "Spoke & Chain" };
+
+/// What the workshop does as customers answer: the answer is noted on the repair.
+[On]
+void RepairAnswered(FeedbackAnswered e) {
+  if (e.Ask.About is Repair r) {
+    new RepairNote { Repair = r, Says = (e.Change == FeedbackChange.First ? "answered " : "changed to ")
+                                        + (e.Ask.Rating == FeedbackRating.Bad ? "bad" : "good") };
+  }
+}
+
+/// What the workshop noted on a repair when its customer answered — the app's own record, written by `RepairAnswered`.
+entity RepairNote {
+  [CreatedAt] DateTime? CreatedAt;
+  [Required] Repair Repair;
+  [Required, MaxLength(60)] string Says;
+  security { allow read when IsMechanic; }
+}
+
+/// A mechanic marks a repair done — and its customer is asked how it went.
+public FeedbackAsk? FinishRepair(Repair r) {
+  r.Done = true;
+  var asked = AskForFeedback(r, "Your " + r.Bike, person: r.Customer, address: r.Email, by: Session.CurrentUser);
+  UnitOfWork.Commit();
+  return asked;
+}
+
+/// The repair was not right after all — the customer brought it back.
+public int ReopenRepair(Repair r) {
+  r.Done = false;
+  var n = WithdrawFeedback(r);
+  UnitOfWork.Commit();
+  return n;
+}
+
+[AuthMethod]
+string SignInWithCode(string email, string code) {
+  var p = Person.FirstOrDefault(x => x.Email == NormalisedEmail(email));
+  if (p == null || !p.IsActive) { Security.VerifyPassword(code); return ""; }
+  if (!Security.VerifyPassword(code, p.CodeHash)) { return ""; }
+  return Security.IssueJwt(p.Id, p.Email);
+}
+
+app.AuthBootstrap = new AuthBootstrap { Role = ShopRole.Authenticator, Login = SignInWithCode };
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = CodeHash };
+app.Audit = new AuditConfig { Redact = new AuditRedaction { Properties = [FeedbackKitTests.Person.CodeHash] } };
+
+// The workshop's two levels of personal data, read by whoever may read the row; the kit's need no line of their own.
+app = new() { Classifications = [ new Classification(Personal.Contact) { Open = true },
+                                  new Classification(Personal.Content) { Open = true } ] };
+
+// Mechanics ask from their own requests, and take a question back when a repair comes back.
+partial entity FeedbackAsk { security { allow create, update when IsMechanic; } }
+
+// The tests read what was mailed; nobody in the app does.
+partial entity OutgoingMail { security { allow read when IsOwner; } }

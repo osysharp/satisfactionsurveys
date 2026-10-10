@@ -1,0 +1,128 @@
+namespace Osysharp.SatisfactionSurveys;
+
+using Osysharp.Identity;
+
+// ── what the app says ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Who reads the answers and the results — the people who did the work, and whoever looks after how it goes.
+/// `policy ReadsFeedback => IsStaff;`
+policy ReadsFeedback;
+
+/// Who decides whether, when and for how long people are asked — the settings page. `policy ManagesFeedback => IsAdmin;`
+policy ManagesFeedback;
+
+/// How the app's feedback works — `app.Feedback = new FeedbackSetup { AppName = "Workshop" };`.
+///
+/// A question is about any record the app keeps — a repair, an order, a request for help (an `Entity`). Who may read
+/// what was said about it, and where it opens, are the record's own facts (its `security { }`, the page that `[Opens]`
+/// it), so the app writes nothing to tell the kit them.
+[AppSetting("Feedback")]
+public class FeedbackSetup {
+  /// The name a question is signed with ("Workshop"). Empty: the mail says "us".
+  public string AppName = "";
+}
+
+/// Somebody answered (`FeedbackChange.First`) or changed their answer (`Changed`). Heard after the commit that applied
+/// it, as the app — so a handler may write on the work's own record (`e.Ask.About`) and tell people what a person who is
+/// not signed in could not. `e.Ask.Rating` and `e.Ask.Comment` are the answer now. Any package that sees it, or the app,
+/// hears it — `[On] void RepairAnswered(FeedbackAnswered e) { … }`; one that throws is written down, and the others
+/// still hear it.
+[Event("Feedback answered")]
+public sealed class FeedbackAnswered {
+  public FeedbackAsk Ask;
+  public FeedbackChange Change;
+  /// "Olivia Brandt said it did not go well." — said when read: whoever answered, by their name as the reader may read it.
+  public override string Sentence() {
+    var who = Ask.Person == null ? "Somebody" : (Ask.Person.DisplayName != "" ? Ask.Person.DisplayName : Ask.Person.Email);
+    if (Ask.Rating == FeedbackRating.Bad) { return $"{who} said it did not go well."; }
+    return $"{who} said it went well.";
+  }
+}
+
+/// Ask `person` (their account) or whoever reads `address` how the work `about` went — any record the app keeps.
+/// `title` is what the work was, as they read it. `language`: the one the question is mailed in. `by`: who asks.
+/// `mail`: the kit mails the question — after the settings' "Ask after", or with the app's own mail when that is zero
+/// and the app takes it (`TakeFeedbackMail`); false asks only in the app's page. Answers the question — the one already
+/// asked when there is one, so a second ask never makes a second question — or null when the app does not ask
+/// (Settings › Feedback). Asked again, an unanswered question stays open for the full time again, and an answered one
+/// can be changed again.
+public FeedbackAsk? AskForFeedback(Entity about, string title, Principal? person = null, string address = "",
+                                   string language = "", Principal? by = null, bool mail = true) {
+  return AskAbout(about, title, person, address, language, by, mail);
+}
+
+/// Stop asking about `about` — the work was opened again. Its unanswered questions are withdrawn (asking again opens
+/// them again); an answer already given is kept. Answers how many were withdrawn.
+public int WithdrawFeedback(Entity about) { return WithdrawAbout(about); }
+
+/// What the person last said about the work `about` — good, bad, or none yet. The plain signal for code that acts on it:
+/// a rule that closes work a person confirmed helped, a report.
+public FeedbackRating? FeedbackRatingOf(Entity about) { return LatestRating(about); }
+
+/// What was answered about the work `about`, newest first — for the people who did the work.
+public List<FeedbackAnswerLine> FeedbackAnswersAbout(Entity about) { return AnswerLines(about); }
+
+/// The name a question is signed with.
+public string FeedbackAppName() {
+  var name = App.Setting<FeedbackSetup>().AppName;
+  return name == "" ? "us" : name;
+}
+
+// ── the settings staff keep ───────────────────────────────────────────────────────────────────────────────────────────
+
+/// Whether people are asked, when, and how long a question and an answer last. One row, made the first time the
+/// settings page is opened; none means the defaults. The page is generated: `FeedbackSettingsPage` at
+/// `/settings/feedback`, which an app takes over by name.
+[Settings("Feedback", Authorize = ManagesFeedback, Route = "/settings/feedback", Order = 60, Icon = Icons.Star,
+          Hint = "Whether people are asked how it went, when, and how long answers are kept.",
+          Description = "When a piece of work is done, the person it was for is asked one question — how did we do? — with good or bad and room for a comment. They answer from the mail, with no account, or signed in.",
+          Saved = "Feedback settings saved.")]
+[SettingsGroup("Asking", "Whether people are asked, how long after the work is done, and how long the question stays open.")]
+[SettingsGroup("Answers", "How long a person can change their answer, and how long answers are kept before they are deleted.")]
+public entity FeedbackSettings {
+  [Setting("Ask how it went", Group = "Asking", Hint = "Off, nobody is asked. Answers already given are kept.")]
+  bool Ask = true;
+  [Setting("Ask after", Group = "Asking", Hint = "How long after the work is done the question is mailed. Zero sends it with the app's own mail, if it sends one.")]
+  TimeSpan AskAfter = TimeSpan.Zero;
+  [Setting("Open for", Group = "Asking", Hint = "After this, the question can no longer be answered. At most 180 days.")]
+  TimeSpan OpenFor = TimeSpan.FromDays(30);
+  [Setting("Can be changed for", Group = "Answers", Hint = "How long after answering a person can change their mind. At most 90 days.")]
+  TimeSpan ChangeFor = TimeSpan.FromDays(7);
+  [Setting("Keep answers for", Group = "Answers", Hint = "Questions and answers older than this are deleted. Between 30 days and 10 years.")]
+  TimeSpan KeepFor = TimeSpan.FromDays(730);
+
+  // The links a question is mailed with work for 400 days at most (`FeedbackLink`), so a question cannot stay open, or
+  // an answer changeable, for longer than a link lives.
+  invariant AskAfter >= TimeSpan.Zero && AskAfter <= TimeSpan.FromDays(30)
+    message "Ask within 30 days of the work being done.";
+  invariant OpenFor >= TimeSpan.FromHours(1) && OpenFor <= TimeSpan.FromDays(180)
+    message "A question stays open between an hour and 180 days.";
+  invariant ChangeFor >= TimeSpan.Zero && ChangeFor <= TimeSpan.FromDays(90)
+    message "An answer can be changed for at most 90 days.";
+  invariant KeepFor >= TimeSpan.FromDays(30) && KeepFor <= TimeSpan.FromDays(3650)
+    message "Keep answers between 30 days and 10 years.";
+
+  security {
+    // Read by whoever asks (the app's own code, as the people who do the work) and whoever reads the results; changed
+    // by whoever manages feedback. A person answering never reads it — what they need is on their question.
+    allow read when ReadsFeedback || ManagesFeedback;
+    allow create, update when ManagesFeedback;
+  }
+}
+
+/// The settings as they are now — the row's, or the defaults when nobody has opened the page.
+public class FeedbackRules {
+  public bool Ask = true;
+  public TimeSpan AskAfter = TimeSpan.Zero;
+  public TimeSpan OpenFor = TimeSpan.FromDays(30);
+  public TimeSpan ChangeFor = TimeSpan.FromDays(7);
+  public TimeSpan KeepFor = TimeSpan.FromDays(730);
+}
+
+/// The feedback settings in force.
+public FeedbackRules FeedbackRulesNow() {
+  var row = FeedbackSettings.FirstOrDefault();
+  if (row == null) { return new FeedbackRules(); }
+  return new FeedbackRules { Ask = row.Ask, AskAfter = row.AskAfter, OpenFor = row.OpenFor, ChangeFor = row.ChangeFor,
+                             KeepFor = row.KeepFor };
+}

@@ -1,0 +1,177 @@
+// Answers: one click answers, one question per piece of work and person (held by the database), only its person
+// answers it, a link answers from a mail with no account, an answer can be changed for a while and then it is settled,
+// a question closes, and a repair brought back withdraws its question.
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using Osysharp.Mail;
+using FeedbackKitTests;
+
+[Test(Workshop)]
+void a_finished_repair_asks_its_customer_and_one_click_answers() {
+  Finish("city bike");
+  var view = KimsQuestion("city bike")!;
+  Assert.Equal(FeedbackStage.Open, view.Stage);
+  Assert.Equal("Your city bike, full service", view.Title);
+  runas (Kim) { AnswerMyFeedback(view.Ask, FeedbackRating.Good); }
+  // Said at once, applied after the commit.
+  Assert.Equal(FeedbackStage.Answered, KimsQuestion("city bike")!.Stage);
+  Background.Settle();
+  Assert.Equal(FeedbackRating.Good, AskedAbout("city bike").Rating);
+  Assert.Equal(["answered good"], NotesOn("city bike"));
+  runas (Mia) {
+    var r = Repair.Single(x => x.Bike.StartsWith("city bike"));
+    Assert.Equal(FeedbackRating.Good, FeedbackRatingOf(r));
+    Assert.Equal(1, FeedbackAnswersAbout(r).Count);
+  }
+}
+
+[Test(Workshop)]
+void a_repair_nobody_was_asked_about_shows_no_question() {
+  Assert.Null(KimsQuestion("city bike"));
+}
+
+// SECURITY-INVARIANT(feedback-one-answer-per-subject-per-person)
+[Test(Workshop)]
+void the_database_holds_one_question_per_piece_of_work_and_person() {
+  Finish("city bike");
+  // Finished twice: still one question.
+  Finish("city bike");
+  var r = RepairOf("city bike");
+  runas (Olle) { Assert.Equal(1, FeedbackAsk.Count(a => a.About == r)); }
+  // …and the database refuses a second row for the same person and work, whoever writes it.
+  runas (Mia) {
+    var kim = Person.Single(p => p.Email == "kim@riders.test");
+    Assert.Throws<Exception>(() => {
+      new FeedbackAsk { About = r, PersonKey = "account:" + kim.Id.ToString(), Person = kim,
+                        Title = "again", AskedAt = DateTime.UtcNow, ClosesAt = DateTime.UtcNow.AddDays(1) };
+      UnitOfWork.Commit();
+    });
+  }
+}
+
+// SECURITY-INVARIANT(feedback-is-answered-only-by-its-person)
+[Test(Workshop)]
+void nobody_answers_for_somebody_else() {
+  Finish("city bike");
+  var ask = KimsQuestion("city bike")!.Ask;
+  // Another customer: the question is not theirs to read, answer or reply to.
+  runas (Jo) {
+    Assert.Equal(0, FeedbackAsk.Count());
+    var ex = Assert.Throws<ValidationException>(() => AnswerMyFeedback(ask, FeedbackRating.Bad));
+    Assert.Equal("That is not a question we asked you.", ex.Message);
+  }
+  // A mechanic reads it — and still cannot answer it, write a reply for Kim, or set what she said.
+  runas (Mia) {
+    var a = FeedbackAsk.Single(x => x.Id == ask);
+    Assert.Throws<ValidationException>(() => AnswerMyFeedback(ask, FeedbackRating.Bad));
+    Assert.Denied(() => new FeedbackReply { Ask = a, Rating = FeedbackRating.Bad, At = DateTime.UtcNow });
+    Assert.Denied(() => a.Rating = FeedbackRating.Bad);
+    Assert.Denied(() => a.Comment = "Terrible");
+  }
+  Background.Settle();
+  Assert.Null(AskedAbout("city bike").Rating);
+}
+
+[Test(Workshop)]
+void an_answer_from_the_mail_link_needs_no_account() {
+  Finish("cargo bike");
+  // Lena has no account: the question went to her address, with good and bad as links.
+  var mail = MailTo("lena@riders.test").Single();
+  Assert.Equal("How did we do? Your cargo bike, new brake pads", mail.Subject);
+  Assert.Contains("/feedback/g1.", mail.Text);
+  var link = LinkFor("cargo bike");
+  // Nobody is signed in here.
+  var view = FeedbackByLink(link);
+  Assert.Equal(FeedbackStage.Open, view.Stage);
+  Assert.Equal("Spoke & Chain", view.AppName);
+  view = AnswerFeedbackByLink(link, FeedbackRating.Bad, "The front brake still squeaks.");
+  Assert.Equal(FeedbackStage.Answered, view.Stage);
+  Assert.Equal(FeedbackRating.Bad, view.Rating);
+  Background.Settle();
+  var asked = AskedAbout("cargo bike");
+  Assert.Equal(FeedbackRating.Bad, asked.Rating);
+  Assert.Equal("The front brake still squeaks.", asked.Comment);
+}
+
+// The link answers its own question and nothing else: a forged one is refused before anything runs.
+[Test(Workshop)]
+void a_link_that_is_not_one_the_app_made_opens_nothing() {
+  Finish("cargo bike");
+  Assert.Throws<Exception>(() => FeedbackByLink(FeedbackLink.From("g1.not-a-real-link")));
+}
+
+[Test(Workshop)]
+void an_answer_can_be_changed_for_a_week_and_then_it_is_settled() {
+  TestClock.Set(new DateTime(2030, 5, 6, 9, 0, 0));
+  Finish("cargo bike");
+  var link = LinkFor("cargo bike");
+  AnswerFeedbackByLink(link, FeedbackRating.Good);
+  Background.Settle();
+  // Three days later she changes her mind, and says why.
+  TestClock.Advance(TimeSpan.FromDays(3));
+  AnswerFeedbackByLink(link, FeedbackRating.Bad, "It squeaked again on the way home.");
+  Background.Settle();
+  var asked = AskedAbout("cargo bike");
+  Assert.Equal(FeedbackRating.Bad, asked.Rating);
+  Assert.Equal(1, asked.Changes);
+  Assert.Equal(["answered good", "changed to bad"], NotesOn("cargo bike"));
+  // A week after she first answered, it is settled: the link shows what she said and changes nothing.
+  TestClock.Advance(TimeSpan.FromDays(5));
+  Assert.Equal(FeedbackStage.Settled, FeedbackByLink(link).Stage);
+  var ex = Assert.Throws<ValidationException>(() => AnswerFeedbackByLink(link, FeedbackRating.Good));
+  Assert.Equal("Your answer can no longer be changed. Thank you for it.", ex.Message);
+  Background.Settle();
+  Assert.Equal(FeedbackRating.Bad, AskedAbout("cargo bike").Rating);
+}
+
+[Test(Workshop)]
+void a_question_past_its_days_can_no_longer_be_answered() {
+  TestClock.Set(new DateTime(2030, 5, 6, 9, 0, 0));
+  Finish("cargo bike");
+  var link = LinkFor("cargo bike");
+  TestClock.Advance(TimeSpan.FromDays(31));
+  Assert.Equal(FeedbackStage.Closed, FeedbackByLink(link).Stage);
+  var ex = Assert.Throws<ValidationException>(() => AnswerFeedbackByLink(link, FeedbackRating.Good));
+  Assert.Equal("This question closed on 5 June 2030. Thank you all the same.", ex.Message);
+  Background.Settle();
+  Assert.Null(AskedAbout("cargo bike").Rating);
+}
+
+[Test(Workshop)]
+void a_repair_brought_back_withdraws_its_question_and_finishing_it_again_asks_again() {
+  Finish("city bike");
+  var r = RepairOf("city bike");
+  runas (Mia) { Assert.Equal(1, ReopenRepair(Repair.Single(x => x.Id == r.Id))); }
+  Assert.Equal(FeedbackStage.Withdrawn, KimsQuestion("city bike")!.Stage);
+  runas (Kim) {
+    var ex = Assert.Throws<ValidationException>(() => AnswerMyFeedback(KimsQuestion("city bike")!.Ask, FeedbackRating.Good));
+    Assert.Contains("We are not asking about this any more", ex.Message);
+  }
+  Finish("city bike");
+  Assert.Equal(FeedbackStage.Open, KimsQuestion("city bike")!.Stage);
+  runas (Olle) { Assert.Equal(1, FeedbackAsk.Count(a => a.About == r)); }
+}
+
+[Test(Workshop)]
+void an_answer_already_given_stays_when_the_work_is_opened_again() {
+  Finish("city bike");
+  runas (Kim) { AnswerMyFeedback(KimsQuestion("city bike")!.Ask, FeedbackRating.Bad, "Gears slip."); }
+  Background.Settle();
+  var r = RepairOf("city bike");
+  runas (Mia) { Assert.Equal(0, ReopenRepair(Repair.Single(x => x.Id == r.Id))); }
+  Assert.Equal(FeedbackRating.Bad, AskedAbout("city bike").Rating);
+  // Finished properly this time: she may change it again.
+  Finish("city bike");
+  runas (Kim) { AnswerMyFeedback(KimsQuestion("city bike")!.Ask, FeedbackRating.Good, "Sorted now — thanks."); }
+  Background.Settle();
+  Assert.Equal(FeedbackRating.Good, AskedAbout("city bike").Rating);
+}
+
+[Test(Workshop)]
+void a_comment_longer_than_two_thousand_characters_is_refused_with_why() {
+  Finish("city bike");
+  runas (Kim) {
+    var ex = Assert.Throws<ValidationException>(() => AnswerMyFeedback(KimsQuestion("city bike")!.Ask, FeedbackRating.Good, "x".PadRight(2001, 'x')));
+    Assert.Equal("Keep your comment under 2,000 characters.", ex.Message);
+  }
+}

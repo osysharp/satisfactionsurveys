@@ -1,0 +1,47 @@
+namespace Osysharp.SatisfactionSurveys;
+
+using Osysharp.Mail;
+using Osysharp.EmailTemplates;
+
+// ── the question in a mail ────────────────────────────────────────────────────────────────────────────────────────────
+//
+// Two ways it reaches a person by mail: the kit's own mail (`FeedbackQuestionMail`), sent when "Ask after" is up; or a
+// mail the APP sends anyway as the work is done — "your repair is ready", "your request is solved" — carrying the
+// question in its own words, with `FeedbackMailQuestion(links)` inside it (`TakeFeedbackMail` gives the links).
+//
+// ⚑ ONE CLICK IS AN ANSWER. Good and bad are each a link: following one records it and opens the page that thanks them
+//   and offers room for a comment. No account, no form.
+
+/// The kit's own mail: how did we do, about one piece of work — in the person's language.
+[Email]
+public component FeedbackQuestionMail(FeedbackAsk ask, FeedbackLinks links) {
+  language => ask.Language;
+  subject => $"How did we do? {ask.Title}";
+  render {
+    EmailLayout(FeedbackAppName(), preview: "One click tells us — good or bad.",
+                footer: "We ask once about each piece of work. Answer or not, nothing else follows from this mail.") {
+      EmailHeading("How did we do?");
+      if (ask.Title != "") { EmailText(ask.Title); }
+      FeedbackMailQuestion(links);
+    }
+  }
+}
+
+/// The question as a part of any mail — two links, good and bad, and a line saying a comment is welcome. Put it inside
+/// an `EmailLayout`: `FeedbackMailQuestion(TakeFeedbackMail(ask)!)`.
+[Email]
+public component FeedbackMailQuestion(FeedbackLinks links) {
+  render {
+    Stack(gap: 3, borderTW: 1, border: Colors.Border, pt: 4) {
+      Text("How did we do?", fontSize: FontSize.Subhead, fontWeight: FontWeight.Semibold, color: Colors.OnBg);
+      Row(gap: 3) {
+        Link(links.Good, text: "Good", bg: Colors.Primary, color: Colors.OnPrimary, px: 6, py: 3, rounded: Radius.Md,
+             fontWeight: FontWeight.Semibold);
+        Link(links.Bad, text: "Bad", bg: Colors.Muted, color: Colors.OnBg, px: 6, py: 3, rounded: Radius.Md,
+             fontWeight: FontWeight.Semibold);
+      }
+      Text("One click is your answer. You can add a comment on the page it opens, and change your mind for a while after.",
+           fontSize: FontSize.Label, color: Colors.TextMuted, lineHeight: 1.5);
+    }
+  }
+}
