@@ -265,7 +265,7 @@ bool MailFeedbackQuestion(FeedbackAsk ask) {
     ask.Problem = "Not mailed: by its time it was " + stage.Label.ToLower() + ".";
     return false;
   }
-  var said = FeedbackQuestionMail(ask, FeedbackLinksOf(ask));
+  var said = App.Setting<FeedbackSetup>().Mails.Question(ask, FeedbackLinksOf(ask));
   SendMail(new MailMessage { To = [ask.Address], Subject = said.Subject, Html = said.Html, Text = said.Text },
            "feedback-question-" + ask.Id.ToString());
   ask.MailedAt = now;

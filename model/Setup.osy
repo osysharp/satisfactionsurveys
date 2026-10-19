@@ -20,6 +20,14 @@ policy ManagesFeedback;
 public class FeedbackSetup {
   /// The name a question is signed with ("Workshop"). Empty: the mail says "us".
   public string AppName = "";
+  /// The mail a question is sent as — derive from `FeedbackMails` and override to write it in the app's own words.
+  public FeedbackMails Mails = new FeedbackMails();
+}
+
+/// The mail the kit sends. One method per mail, asked here wherever it goes out, so an override reaches every send.
+public class FeedbackMails {
+  /// The question `ask`, with the links that answer it.
+  public virtual RenderedEmail Question(FeedbackAsk ask, FeedbackLinks links) { return FeedbackQuestionMail(ask, links); }
 }
 
 /// Somebody answered (`FeedbackChange.First`) or changed their answer (`Changed`). Heard after the commit that applied
