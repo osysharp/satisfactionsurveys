@@ -27,8 +27,8 @@
 // Specialised scales — a 0–10 recommendation score, effort, several questions — are not here on purpose: they are
 // add-ons on this core.
 package Osysharp.SatisfactionSurveys {
-  version "0.6.0";
-  minPlatform "0.14.0";
+  version "0.7.0";
+  minPlatform "0.15.0";
   // A product capability: other kits meet it through a bridge that `completes` it, never by using it.
   role        vertical;
   summary     "asking the person a piece of work served how it went — one good-or-bad answer and an optional comment per subject and person (held by the database), answered from a mail link with no account or signed in on the app's page, changeable for a while, applied durably after the commit, and read back as a summary: answered, good, week by week, recent comments.";

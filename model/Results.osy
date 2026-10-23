@@ -148,6 +148,6 @@ int PurgeFeedback(DateTime now) {
     foreach (var r in FeedbackReply.Where(r => r.Ask == a).ToList()) { r.Delete(); }
     a.Delete();
   }
-  if (gone.Count > 0) { Log.Information("Feedback: " + gone.Count.ToString() + " questions past their keeping time were deleted."); }
+  if (gone.Count > 0) { Log.Debug("Feedback: " + gone.Count.ToString() + " questions past their keeping time were deleted."); }
   return gone.Count;
 }

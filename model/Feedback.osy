@@ -159,7 +159,7 @@ FeedbackAsk? AskAbout(Entity about, string title, Principal? person, string addr
   }
   var rules = FeedbackRulesNow();
   if (!rules.Ask) {
-    Log.Information("Feedback: not asked about " + Records.Noun(about) + " " + about.Id.ToString() + " — asking is switched off.");
+    Log.Debug("Feedback: not asked about " + Records.Noun(about) + " " + about.Id.ToString() + " — asking is switched off.");
     return null;
   }
   var to = (address ?? "").Trim().ToLower();
@@ -269,7 +269,7 @@ bool MailFeedbackQuestion(FeedbackAsk ask) {
   SendMail(new MailMessage { To = [ask.Address], Subject = said.Subject, Html = said.Html, Text = said.Text },
            "feedback-question-" + ask.Id.ToString());
   ask.MailedAt = now;
-  Log.Information("Feedback: question " + ask.Id.ToString() + " mailed.");
+  Log.Debug("Feedback: question " + ask.Id.ToString() + " mailed.");
   return true;
 }
 
@@ -418,7 +418,7 @@ bool ApplyFeedbackReply(FeedbackReply reply) {
   }
   ask.Rating = reply.Rating;
   ask.Comment = reply.Comment;
-  Log.Information("Feedback: " + (change == FeedbackChange.First ? "answered" : "changed") + " " + reply.Rating.ToString().ToLower()
+  Log.Debug("Feedback: " + (change == FeedbackChange.First ? "answered" : "changed") + " " + reply.Rating.ToString().ToLower()
     + " for question " + ask.Id.ToString() + ".");
   Raise(new FeedbackAnswered { Ask = ask, Change = change });
   return true;
