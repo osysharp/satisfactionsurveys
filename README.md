@@ -58,3 +58,78 @@ One question, good or bad, by design. A 0–10 score or a survey of several ques
 ## Its tests
 
 Every behaviour above is proven against a small workshop app, its screens photographed with `osy test --pixels`.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using Osysharp.Mail;
+using FeedbackKitTests;
+
+[Test(Workshop)]
+void a_finished_repair_asks_its_customer_and_one_click_answers() {
+  Finish("city bike");
+  var view = KimsQuestion("city bike")!;
+  Assert.Equal(FeedbackStage.Open, view.Stage);
+  Assert.Equal("Your city bike, full service", view.Title);
+  runas (Kim) { AnswerMyFeedback(view.Ask, FeedbackRating.Good); }
+  // Said at once, applied after the commit.
+  Assert.Equal(FeedbackStage.Answered, KimsQuestion("city bike")!.Stage);
+  Background.Settle();
+  Assert.Equal(FeedbackRating.Good, AskedAbout("city bike").Rating);
+  Assert.Equal(["answered good"], NotesOn("city bike"));
+  runas (Mia) {
+    var r = Repair.Single(x => x.Bike.StartsWith("city bike"));
+    Assert.Equal(FeedbackRating.Good, FeedbackRatingOf(r));
+    Assert.Equal(1, FeedbackAnswersAbout(r).Count);
+  }
+}
+```
+
+From [`tests/answers.test.osy`](tests/answers.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using Osysharp.Mail;
+using FeedbackKitTests;
+
+[Test(Workshop)]
+void asking_switched_off_asks_nobody() {
+  Settings(false, TimeSpan.Zero, TimeSpan.FromDays(730));
+  Finish("cargo bike");
+  Assert.Empty(MailTo("lena@riders.test"));
+  var r = RepairOf("cargo bike");
+  runas (Olle) { Assert.Equal(0, FeedbackAsk.Count(a => a.About == r)); }
+}
+```
+
+From [`tests/asking.test.osy`](tests/asking.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.SatisfactionSurveys;
+using Osysharp.Mail;
+using FeedbackKitTests;
+
+[Test(Workshop)]
+void a_repair_nobody_was_asked_about_shows_no_question() {
+  Assert.Null(KimsQuestion("city bike"));
+}
+```
+
+From [`tests/answers.test.osy`](tests/answers.test.osy).
+
+## Learn more
+
+- [The Osysharp.SatisfactionSurveys reference](https://osysharp.com/reference/ui/feedback-kit/)
+- [Osysharp.SatisfactionSurveys in the package catalogue](https://osysharp.com/packages/#osysharp-satisfactionsurveys)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
